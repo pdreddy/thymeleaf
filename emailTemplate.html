@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:th="http://www.thymeleaf.org">
+	<head>
+		<title></title>
+		
+<style>
+table, th, td {
+    border: 1px solid black;
+    border-collapse: collapse;
+}
+th, td {
+    padding: 5px;
+    text-align: left;
+}
+</st</style>
+	</head>
+	<body>
+		<p>&nbsp;</p>
+		<p>Dear Team Member,</p>
+		<p>The Factory Feed Ingestion and Archive JOB completed <strong>Successful</strong>.&nbsp;Kindly find the summary of the files Processed.
+		</p>
+		<p>Job Status: <span style="background-color:green">GREEN</span></p>
+		<p></p>
+		<table style="width:100%">
+		  <caption>Factory Feed Ingestion and Archive  Process Summary</caption>
+			
+			
+    <tr>
+    		<th><strong> Archive File Name</strong></th>
+			<th><strong>Number of files Processed</strong></th>
+	</tr>
+		
+
+ <tr th:if="${scount} &gt; 0">
+ 
+       <td th:text="${sFilename}"> </td>  <td th:text="${scount}"></td>
+    </tr>
+    <tr th:if="${ecount} &gt; 0">
+      
+        <td th:text="${eFilename}"></td>  <td th:text="${ecount}"></td>
+    </tr>
+</tbody>			
+		</table>
+		<p>&nbsp;</p>
+		<p>
+			<em>(Note: This is an automatically generated email please do not reply to this message.)</em>
+		</p>
+		
+		<p>Sincerely,
+			<br />Honda OTA Support
+		</p>
+	</body>
+</html>
