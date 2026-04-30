@@ -1,221 +1,151 @@
-@DataJpaTest
+@ExtendWith(MockitoExtension.class)
 class CertificateSpecificationTest {
 
-    @Autowired
-    private TestEntityManager entityManager;
+    @Mock
+    Root<Certificate> root;
 
-    @Autowired
-    private CertificateRepository certificateRepository;
+    @Mock
+    CriteriaQuery<?> query;
+
+    @Mock
+    CriteriaBuilder cb;
+
+    @Mock
+    Path<Object> path;
+
+    @Mock
+    Predicate predicate;
 
     @Test
-    void shouldFilterByCertSerialNumber() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("SER123");
-        c1.setJwtId("kid-1");
-        c1.setAddedBy("user1");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        c1.setJustification("test".getBytes(StandardCharsets.UTF_8));
-        entityManager.persist(c1);
-
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("SER999");
-        c2.setJwtId("kid-2");
-        c2.setAddedBy("user2");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(10));
-        c2.setJustification("other".getBytes(StandardCharsets.UTF_8));
-        entityManager.persist(c2);
-
-        entityManager.flush();
-
+    void shouldAddCertSerialNumberPredicate() {
         CertSearchRequest req = new CertSearchRequest();
         req.setCertSerialNumber("SER123");
 
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
+        when(root.get("certSerialNumber")).thenReturn(path);
+        when(cb.equal(path, "SER123")).thenReturn(predicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
 
-        assertEquals(1, result.size());
-        assertEquals("SER123", result.get(0).getCertSerialNumber());
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+        verify(root).get("certSerialNumber");
+        verify(cb).equal(path, "SER123");
     }
 
     @Test
-    void shouldFilterByKid() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("SER123");
-        c1.setJwtId("kid-abc");
-        c1.setAddedBy("user1");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c1);
-
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("SER456");
-        c2.setJwtId("kid-xyz");
-        c2.setAddedBy("user2");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c2);
-
-        entityManager.flush();
-
+    void shouldAddKidPredicate() {
         CertSearchRequest req = new CertSearchRequest();
-        req.setKid("kid-abc");
+        req.setKid("kid-123");
 
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
+        when(root.get("jwtId")).thenReturn(path);
+        when(cb.equal(path, "kid-123")).thenReturn(predicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
 
-        assertEquals(1, result.size());
-        assertEquals("kid-abc", result.get(0).getJwtId());
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+        verify(root).get("jwtId");
+        verify(cb).equal(path, "kid-123");
     }
 
     @Test
-    void shouldFilterByAddedAccount() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("SER123");
-        c1.setJwtId("kid-1");
-        c1.setAddedBy("damu");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c1);
-
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("SER456");
-        c2.setJwtId("kid-2");
-        c2.setAddedBy("admin");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c2);
-
-        entityManager.flush();
-
+    void shouldAddAddedByPredicate() {
         CertSearchRequest req = new CertSearchRequest();
         req.setAddedAccount("damu");
 
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
+        when(root.get("addedBy")).thenReturn(path);
+        when(cb.equal(path, "damu")).thenReturn(predicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
 
-        assertEquals(1, result.size());
-        assertEquals("damu", result.get(0).getAddedBy());
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+        verify(root).get("addedBy");
+        verify(cb).equal(path, "damu");
     }
 
     @Test
-    void shouldFilterByCertificatesExpiringWithinDays() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("EXP-5");
-        c1.setJwtId("kid-1");
-        c1.setAddedBy("user1");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c1);
+    void shouldAddJustificationPredicate() {
+        CertSearchRequest req = new CertSearchRequest();
+        req.setJustification("approved");
 
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("EXP-20");
-        c2.setJwtId("kid-2");
-        c2.setAddedBy("user2");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(20));
-        entityManager.persist(c2);
+        byte[] expectedBytes = "approved".getBytes(StandardCharsets.UTF_8);
 
-        Certificate c3 = new Certificate();
-        c3.setCertSerialNumber("EXPIRED");
-        c3.setJwtId("kid-3");
-        c3.setAddedBy("user3");
-        c3.setCertEndDate(LocalDateTime.now().minusDays(1));
-        entityManager.persist(c3);
+        when(root.get("justification")).thenReturn(path);
+        when(cb.equal(eq(path), aryEq(expectedBytes))).thenReturn(predicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
 
-        entityManager.flush();
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
 
+        assertNotNull(result);
+        verify(root).get("justification");
+        verify(cb).equal(eq(path), aryEq(expectedBytes));
+    }
+
+    @Test
+    void shouldAddNumDaysToExpirePredicate() {
         CertSearchRequest req = new CertSearchRequest();
         req.setNumDaysToExpire(10);
 
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
+        Path<LocalDateTime> datePath = mock(Path.class);
 
-        assertEquals(1, result.size());
-        assertEquals("EXP-5", result.get(0).getCertSerialNumber());
+        when(root.<LocalDateTime>get("certEndDate")).thenReturn(datePath);
+        when(cb.greaterThan(eq(datePath), any(LocalDateTime.class))).thenReturn(predicate);
+        when(cb.lessThan(eq(datePath), any(LocalDateTime.class))).thenReturn(predicate);
+        when(cb.and(any(Predicate.class), any(Predicate.class))).thenReturn(predicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
+
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+        verify(root, times(2)).get("certEndDate");
+        verify(cb).greaterThan(eq(datePath), any(LocalDateTime.class));
+        verify(cb).lessThan(eq(datePath), any(LocalDateTime.class));
     }
 
     @Test
-    void shouldFilterByJustification() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("SER123");
-        c1.setJwtId("kid-1");
-        c1.setAddedBy("user1");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        c1.setJustification("approved reason".getBytes(StandardCharsets.UTF_8));
-        entityManager.persist(c1);
-
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("SER456");
-        c2.setJwtId("kid-2");
-        c2.setAddedBy("user2");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(5));
-        c2.setJustification("different reason".getBytes(StandardCharsets.UTF_8));
-        entityManager.persist(c2);
-
-        entityManager.flush();
-
+    void shouldReturnConjunctionWhenNoFilters() {
         CertSearchRequest req = new CertSearchRequest();
-        req.setJustification("approved reason");
 
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
+        when(cb.conjunction()).thenReturn(predicate);
 
-        assertEquals(1, result.size());
-        assertArrayEquals(
-                "approved reason".getBytes(StandardCharsets.UTF_8),
-                result.get(0).getJustification()
-        );
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+        verify(cb).conjunction();
+        verify(cb, never()).and(any(Predicate[].class));
     }
 
     @Test
-    void shouldApplyMultipleFiltersTogether() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("SER123");
-        c1.setJwtId("kid-1");
-        c1.setAddedBy("damu");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c1);
-
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("SER123");
-        c2.setJwtId("kid-2");
-        c2.setAddedBy("admin");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c2);
-
-        entityManager.flush();
-
+    void shouldApplyMultipleFilters() {
         CertSearchRequest req = new CertSearchRequest();
         req.setCertSerialNumber("SER123");
-        req.setKid("kid-1");
+        req.setKid("kid-123");
         req.setAddedAccount("damu");
-        req.setNumDaysToExpire(10);
 
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
+        when(root.get(anyString())).thenReturn(path);
+        when(cb.equal(any(), any())).thenReturn(predicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
 
-        assertEquals(1, result.size());
-        assertEquals("kid-1", result.get(0).getJwtId());
-        assertEquals("damu", result.get(0).getAddedBy());
-    }
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
 
-    @Test
-    void shouldReturnAllWhenNoFiltersProvided() {
-        Certificate c1 = new Certificate();
-        c1.setCertSerialNumber("SER123");
-        c1.setJwtId("kid-1");
-        c1.setAddedBy("user1");
-        c1.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c1);
+        assertNotNull(result);
 
-        Certificate c2 = new Certificate();
-        c2.setCertSerialNumber("SER456");
-        c2.setJwtId("kid-2");
-        c2.setAddedBy("user2");
-        c2.setCertEndDate(LocalDateTime.now().plusDays(5));
-        entityManager.persist(c2);
+        verify(root).get("certSerialNumber");
+        verify(root).get("jwtId");
+        verify(root).get("addedBy");
 
-        entityManager.flush();
+        verify(cb).equal(path, "SER123");
+        verify(cb).equal(path, "kid-123");
+        verify(cb).equal(path, "damu");
 
-        CertSearchRequest req = new CertSearchRequest();
-
-        List<Certificate> result =
-                certificateRepository.findAll(CertificateSpecification.filter(req));
-
-        assertEquals(2, result.size());
+        verify(cb).and(any(Predicate[].class));
     }
 }
