@@ -1,9 +1,11 @@
+package com.example.cert;
+
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
 import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -18,7 +20,6 @@ public class CertValidatorService {
     private final ResourceLoader resourceLoader;
 
     private List<X509Certificate> rootCerts;
-    private List<X509Certificate> intermediateCerts;
     private Set<TrustAnchor> trustAnchors;
 
     public CertValidatorService(ResourceLoader resourceLoader) {
@@ -29,32 +30,25 @@ public class CertValidatorService {
     public void init() throws Exception {
         log.info("========== CertValidatorService init BEGIN ==========");
 
-        List<X509Certificate> allCerts =
-                loadCertificatesFromResource("classpath:certs/root-cert.pem");
-
-        this.rootCerts = new ArrayList<>();
-        this.intermediateCerts = new ArrayList<>();
+        this.rootCerts = loadCertificatesFromResource("classpath:certs/root-cert.pem");
         this.trustAnchors = new HashSet<>();
 
-        for (X509Certificate cert : allCerts) {
-            logCert("CA", cert);
+        for (X509Certificate root : rootCerts) {
+            logCert("ROOT-FILE", root);
 
-            if (isSelfSigned(cert)) {
-                rootCerts.add(cert);
-                trustAnchors.add(new TrustAnchor(cert, null));
-                log.info("Added as ROOT TrustAnchor");
-            } else {
-                intermediateCerts.add(cert);
-                log.info("Added as INTERMEDIATE CertStore cert");
+            if (!isSelfSigned(root)) {
+                log.warn("Certificate in root-cert.pem is not self-signed. Subject={}, Issuer={}",
+                        root.getSubjectX500Principal(), root.getIssuerX500Principal());
             }
+
+            trustAnchors.add(new TrustAnchor(root, null));
         }
 
-        log.info("Root cert count         : {}", rootCerts.size());
-        log.info("Intermediate cert count : {}", intermediateCerts.size());
-        log.info("TrustAnchor count       : {}", trustAnchors.size());
+        log.info("Root cert count   : {}", rootCerts.size());
+        log.info("TrustAnchor count : {}", trustAnchors.size());
 
         if (trustAnchors.isEmpty()) {
-            throw new IllegalStateException("No root/self-signed certificate found in root-cert.pem");
+            throw new IllegalStateException("No root certificates loaded from root-cert.pem");
         }
 
         log.info("========== CertValidatorService init END ==========");
@@ -63,21 +57,20 @@ public class CertValidatorService {
     public X509Certificate validateCertificateFromText(String publicCertText) throws Exception {
         log.info("========== validateCertificateFromText BEGIN ==========");
 
-        X509Certificate leafCert = loadCertificateFromText(publicCertText);
-        logCert("LEAF", leafCert);
+        List<X509Certificate> incomingCerts = loadCertificatesFromText(publicCertText);
 
-        log.info("Leaf Issuer: {}", leafCert.getIssuerX500Principal());
-
-        for (X509Certificate intermediate : intermediateCerts) {
-            log.info("Intermediate Subject: {}", intermediate.getSubjectX500Principal());
-            log.info("Leaf issuer matches intermediate subject? {}",
-                    leafCert.getIssuerX500Principal().equals(intermediate.getSubjectX500Principal()));
+        if (incomingCerts.isEmpty()) {
+            throw new IllegalArgumentException("No certificate found in incoming text");
         }
 
-        for (X509Certificate root : rootCerts) {
-            log.info("Root Subject: {}", root.getSubjectX500Principal());
-            log.info("Leaf issuer matches root subject? {}",
-                    leafCert.getIssuerX500Principal().equals(root.getSubjectX500Principal()));
+        X509Certificate leafCert = incomingCerts.get(0);
+        leafCert.checkValidity();
+
+        log.info("Incoming certificate count: {}", incomingCerts.size());
+        logCert("LEAF", leafCert);
+
+        for (int i = 1; i < incomingCerts.size(); i++) {
+            logCert("INCOMING-CHAIN-" + i, incomingCerts.get(i));
         }
 
         X509CertSelector selector = new X509CertSelector();
@@ -88,18 +81,34 @@ public class CertValidatorService {
 
         params.setRevocationEnabled(false);
 
-        List<X509Certificate> certStoreCerts = new ArrayList<>();
-        certStoreCerts.add(leafCert);
-        certStoreCerts.addAll(intermediateCerts);
-
+        /*
+         * Important:
+         * Incoming certs should contain:
+         * 1. leaf/client cert
+         * 2. optional intermediate certs
+         *
+         * Root cert still comes from classpath root-cert.pem as TrustAnchor.
+         */
         CertStore certStore = CertStore.getInstance(
                 "Collection",
-                new CollectionCertStoreParameters(certStoreCerts)
+                new CollectionCertStoreParameters(incomingCerts)
         );
 
         params.addCertStore(certStore);
 
-        log.info("CertStore count: {}", certStoreCerts.size());
+        log.info("CertStore count    : {}", incomingCerts.size());
+        log.info("TrustAnchor count  : {}", trustAnchors.size());
+
+        log.info("Leaf Subject       : {}", leafCert.getSubjectX500Principal());
+        log.info("Leaf Issuer        : {}", leafCert.getIssuerX500Principal());
+
+        for (X509Certificate root : rootCerts) {
+            log.info("Root Subject       : {}", root.getSubjectX500Principal());
+            log.info("Root Issuer        : {}", root.getIssuerX500Principal());
+            log.info("Leaf issuer matches root subject? {}",
+                    leafCert.getIssuerX500Principal().equals(root.getSubjectX500Principal()));
+        }
+
         log.info("Starting PKIX path builder...");
 
         try {
@@ -118,26 +127,32 @@ public class CertValidatorService {
             log.info("Built chain size: {}", pathCerts.size());
 
             for (int i = 0; i < pathCerts.size(); i++) {
-                logCert("CHAIN-" + i, (X509Certificate) pathCerts.get(i));
+                logCert("BUILT-CHAIN-" + i, (X509Certificate) pathCerts.get(i));
             }
 
+            log.info("========== validateCertificateFromText END ==========");
             return leafCert;
 
         } catch (CertPathBuilderException ex) {
             log.error("PKIX path build failed: {}", ex.getMessage());
+
             log.error("Leaf Subject: {}", leafCert.getSubjectX500Principal());
             log.error("Leaf Issuer : {}", leafCert.getIssuerX500Principal());
-            log.error("Root count: {}", rootCerts.size());
-            log.error("Intermediate count: {}", intermediateCerts.size());
 
-            for (X509Certificate root : rootCerts) {
-                log.error("ROOT Subject: {}", root.getSubjectX500Principal());
-                log.error("ROOT Issuer : {}", root.getIssuerX500Principal());
+            log.error("Incoming cert count: {}", incomingCerts.size());
+            log.error("Root cert count    : {}", rootCerts.size());
+            log.error("TrustAnchor count  : {}", trustAnchors.size());
+
+            for (int i = 0; i < incomingCerts.size(); i++) {
+                X509Certificate cert = incomingCerts.get(i);
+                log.error("INCOMING-{} Subject: {}", i, cert.getSubjectX500Principal());
+                log.error("INCOMING-{} Issuer : {}", i, cert.getIssuerX500Principal());
             }
 
-            for (X509Certificate intermediate : intermediateCerts) {
-                log.error("INTERMEDIATE Subject: {}", intermediate.getSubjectX500Principal());
-                log.error("INTERMEDIATE Issuer : {}", intermediate.getIssuerX500Principal());
+            for (int i = 0; i < rootCerts.size(); i++) {
+                X509Certificate root = rootCerts.get(i);
+                log.error("ROOT-{} Subject: {}", i, root.getSubjectX500Principal());
+                log.error("ROOT-{} Issuer : {}", i, root.getIssuerX500Principal());
             }
 
             throw ex;
@@ -145,7 +160,7 @@ public class CertValidatorService {
     }
 
     private List<X509Certificate> loadCertificatesFromResource(String resourcePath) throws Exception {
-        log.info("Loading certs from resource: {}", resourcePath);
+        log.info("Loading certificates from resource: {}", resourcePath);
 
         Resource resource = resourceLoader.getResource(resourcePath);
 
@@ -153,8 +168,14 @@ public class CertValidatorService {
 
         try {
             log.info("Resource URI: {}", resource.getURI());
-        } catch (Exception e) {
-            log.warn("Unable to read resource URI: {}", e.getMessage());
+        } catch (Exception ex) {
+            log.warn("Could not read resource URI: {}", ex.getMessage());
+        }
+
+        try {
+            log.info("Resource URL: {}", resource.getURL());
+        } catch (Exception ex) {
+            log.warn("Could not read resource URL: {}", ex.getMessage());
         }
 
         if (!resource.exists()) {
@@ -177,33 +198,63 @@ public class CertValidatorService {
             }
         }
 
-        log.info("Loaded certificate count from {}: {}", resourcePath, certs.size());
+        log.info("Loaded certificate count from resource: {}", certs.size());
         return certs;
     }
 
-    private X509Certificate loadCertificateFromText(String certText) throws Exception {
-        String normalizedPem = normalizePem(certText);
+    private List<X509Certificate> loadCertificatesFromText(String certText) throws Exception {
+        String normalizedPem = normalizeIncomingCertificateText(certText);
 
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        List<X509Certificate> certs = new ArrayList<>();
 
         try (InputStream is = new ByteArrayInputStream(
                 normalizedPem.getBytes(StandardCharsets.UTF_8))) {
 
-            X509Certificate cert = (X509Certificate) cf.generateCertificate(is);
-            cert.checkValidity();
-            return cert;
+            Collection<? extends Certificate> collection =
+                    cf.generateCertificates(is);
+
+            if (collection == null || collection.isEmpty()) {
+                throw new IllegalArgumentException("No certificates found in incoming text");
+            }
+
+            for (Certificate cert : collection) {
+                X509Certificate x509 = (X509Certificate) cert;
+                x509.checkValidity();
+                certs.add(x509);
+            }
         }
+
+        return certs;
     }
 
-    private String normalizePem(String certText) {
+    private String normalizeIncomingCertificateText(String certText) {
         if (certText == null || certText.trim().isEmpty()) {
             throw new IllegalArgumentException("Certificate text is empty");
         }
 
-        String clean = certText
-                .replace("-----BEGIN CERTIFICATE-----", "")
-                .replace("-----END CERTIFICATE-----", "")
-                .replaceAll("\\s+", "");
+        String trimmed = certText.trim();
+
+        /*
+         * If input already contains PEM headers, keep it as-is.
+         * This supports full chain input:
+         *
+         * -----BEGIN CERTIFICATE-----
+         * leaf
+         * -----END CERTIFICATE-----
+         * -----BEGIN CERTIFICATE-----
+         * intermediate
+         * -----END CERTIFICATE-----
+         */
+        if (trimmed.contains("-----BEGIN CERTIFICATE-----")) {
+            return trimmed;
+        }
+
+        /*
+         * If input is only Base64 without PEM headers,
+         * treat it as one certificate.
+         */
+        String clean = trimmed.replaceAll("\\s+", "");
 
         return "-----BEGIN CERTIFICATE-----\n"
                 + clean.replaceAll("(.{64})", "$1\n")
