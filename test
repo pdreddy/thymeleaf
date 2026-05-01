@@ -1,151 +1,225 @@
-@ExtendWith(MockitoExtension.class)
-class CertificateSpecificationTest {
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.ResourceLoader;
+import org.springframework.stereotype.Service;
 
-    @Mock
-    Root<Certificate> root;
+import jakarta.annotation.PostConstruct;
+import java.io.ByteArrayInputStream;
+import java.io.FileNotFoundException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.cert.*;
+import java.util.*;
 
-    @Mock
-    CriteriaQuery<?> query;
+@Slf4j
+@Service
+public class CertValidatorService {
 
-    @Mock
-    CriteriaBuilder cb;
+    private final ResourceLoader resourceLoader;
 
-    @Mock
-    Path<Object> path;
+    private List<X509Certificate> rootCerts;
+    private List<X509Certificate> intermediateCerts;
+    private Set<TrustAnchor> trustAnchors;
 
-    @Mock
-    Predicate predicate;
-
-    @Test
-    void shouldAddCertSerialNumberPredicate() {
-        CertSearchRequest req = new CertSearchRequest();
-        req.setCertSerialNumber("SER123");
-
-        when(root.get("certSerialNumber")).thenReturn(path);
-        when(cb.equal(path, "SER123")).thenReturn(predicate);
-        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
-
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
-
-        assertNotNull(result);
-        verify(root).get("certSerialNumber");
-        verify(cb).equal(path, "SER123");
+    public CertValidatorService(ResourceLoader resourceLoader) {
+        this.resourceLoader = resourceLoader;
     }
 
-    @Test
-    void shouldAddKidPredicate() {
-        CertSearchRequest req = new CertSearchRequest();
-        req.setKid("kid-123");
+    @PostConstruct
+    public void init() throws Exception {
+        log.info("========== CertValidatorService init BEGIN ==========");
 
-        when(root.get("jwtId")).thenReturn(path);
-        when(cb.equal(path, "kid-123")).thenReturn(predicate);
-        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
+        List<X509Certificate> allCerts =
+                loadCertificatesFromResource("classpath:certs/root-cert.pem");
 
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
+        this.rootCerts = new ArrayList<>();
+        this.intermediateCerts = new ArrayList<>();
+        this.trustAnchors = new HashSet<>();
 
-        assertNotNull(result);
-        verify(root).get("jwtId");
-        verify(cb).equal(path, "kid-123");
+        for (X509Certificate cert : allCerts) {
+            logCert("CA", cert);
+
+            if (isSelfSigned(cert)) {
+                rootCerts.add(cert);
+                trustAnchors.add(new TrustAnchor(cert, null));
+                log.info("Added as ROOT TrustAnchor");
+            } else {
+                intermediateCerts.add(cert);
+                log.info("Added as INTERMEDIATE CertStore cert");
+            }
+        }
+
+        log.info("Root cert count         : {}", rootCerts.size());
+        log.info("Intermediate cert count : {}", intermediateCerts.size());
+        log.info("TrustAnchor count       : {}", trustAnchors.size());
+
+        if (trustAnchors.isEmpty()) {
+            throw new IllegalStateException("No root/self-signed certificate found in root-cert.pem");
+        }
+
+        log.info("========== CertValidatorService init END ==========");
     }
 
-    @Test
-    void shouldAddAddedByPredicate() {
-        CertSearchRequest req = new CertSearchRequest();
-        req.setAddedAccount("damu");
+    public X509Certificate validateCertificateFromText(String publicCertText) throws Exception {
+        log.info("========== validateCertificateFromText BEGIN ==========");
 
-        when(root.get("addedBy")).thenReturn(path);
-        when(cb.equal(path, "damu")).thenReturn(predicate);
-        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
+        X509Certificate leafCert = loadCertificateFromText(publicCertText);
+        logCert("LEAF", leafCert);
 
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
+        log.info("Leaf Issuer: {}", leafCert.getIssuerX500Principal());
 
-        assertNotNull(result);
-        verify(root).get("addedBy");
-        verify(cb).equal(path, "damu");
+        for (X509Certificate intermediate : intermediateCerts) {
+            log.info("Intermediate Subject: {}", intermediate.getSubjectX500Principal());
+            log.info("Leaf issuer matches intermediate subject? {}",
+                    leafCert.getIssuerX500Principal().equals(intermediate.getSubjectX500Principal()));
+        }
+
+        for (X509Certificate root : rootCerts) {
+            log.info("Root Subject: {}", root.getSubjectX500Principal());
+            log.info("Leaf issuer matches root subject? {}",
+                    leafCert.getIssuerX500Principal().equals(root.getSubjectX500Principal()));
+        }
+
+        X509CertSelector selector = new X509CertSelector();
+        selector.setCertificate(leafCert);
+
+        PKIXBuilderParameters params =
+                new PKIXBuilderParameters(trustAnchors, selector);
+
+        params.setRevocationEnabled(false);
+
+        List<X509Certificate> certStoreCerts = new ArrayList<>();
+        certStoreCerts.add(leafCert);
+        certStoreCerts.addAll(intermediateCerts);
+
+        CertStore certStore = CertStore.getInstance(
+                "Collection",
+                new CollectionCertStoreParameters(certStoreCerts)
+        );
+
+        params.addCertStore(certStore);
+
+        log.info("CertStore count: {}", certStoreCerts.size());
+        log.info("Starting PKIX path builder...");
+
+        try {
+            CertPathBuilder builder = CertPathBuilder.getInstance("PKIX");
+
+            PKIXCertPathBuilderResult result =
+                    (PKIXCertPathBuilderResult) builder.build(params);
+
+            log.info("========== Chain validated successfully ==========");
+            log.info("Trusted Root: {}",
+                    result.getTrustAnchor().getTrustedCert().getSubjectX500Principal());
+
+            List<? extends Certificate> pathCerts =
+                    result.getCertPath().getCertificates();
+
+            log.info("Built chain size: {}", pathCerts.size());
+
+            for (int i = 0; i < pathCerts.size(); i++) {
+                logCert("CHAIN-" + i, (X509Certificate) pathCerts.get(i));
+            }
+
+            return leafCert;
+
+        } catch (CertPathBuilderException ex) {
+            log.error("PKIX path build failed: {}", ex.getMessage());
+            log.error("Leaf Subject: {}", leafCert.getSubjectX500Principal());
+            log.error("Leaf Issuer : {}", leafCert.getIssuerX500Principal());
+            log.error("Root count: {}", rootCerts.size());
+            log.error("Intermediate count: {}", intermediateCerts.size());
+
+            for (X509Certificate root : rootCerts) {
+                log.error("ROOT Subject: {}", root.getSubjectX500Principal());
+                log.error("ROOT Issuer : {}", root.getIssuerX500Principal());
+            }
+
+            for (X509Certificate intermediate : intermediateCerts) {
+                log.error("INTERMEDIATE Subject: {}", intermediate.getSubjectX500Principal());
+                log.error("INTERMEDIATE Issuer : {}", intermediate.getIssuerX500Principal());
+            }
+
+            throw ex;
+        }
     }
 
-    @Test
-    void shouldAddJustificationPredicate() {
-        CertSearchRequest req = new CertSearchRequest();
-        req.setJustification("approved");
+    private List<X509Certificate> loadCertificatesFromResource(String resourcePath) throws Exception {
+        log.info("Loading certs from resource: {}", resourcePath);
 
-        byte[] expectedBytes = "approved".getBytes(StandardCharsets.UTF_8);
+        Resource resource = resourceLoader.getResource(resourcePath);
 
-        when(root.get("justification")).thenReturn(path);
-        when(cb.equal(eq(path), aryEq(expectedBytes))).thenReturn(predicate);
-        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
+        log.info("Resource exists: {}", resource.exists());
 
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
+        try {
+            log.info("Resource URI: {}", resource.getURI());
+        } catch (Exception e) {
+            log.warn("Unable to read resource URI: {}", e.getMessage());
+        }
 
-        assertNotNull(result);
-        verify(root).get("justification");
-        verify(cb).equal(eq(path), aryEq(expectedBytes));
+        if (!resource.exists()) {
+            throw new FileNotFoundException("Resource not found: " + resourcePath);
+        }
+
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        List<X509Certificate> certs = new ArrayList<>();
+
+        try (InputStream is = resource.getInputStream()) {
+            Collection<? extends Certificate> collection =
+                    cf.generateCertificates(is);
+
+            if (collection == null || collection.isEmpty()) {
+                throw new IllegalArgumentException("No certificates found in: " + resourcePath);
+            }
+
+            for (Certificate cert : collection) {
+                certs.add((X509Certificate) cert);
+            }
+        }
+
+        log.info("Loaded certificate count from {}: {}", resourcePath, certs.size());
+        return certs;
     }
 
-    @Test
-    void shouldAddNumDaysToExpirePredicate() {
-        CertSearchRequest req = new CertSearchRequest();
-        req.setNumDaysToExpire(10);
+    private X509Certificate loadCertificateFromText(String certText) throws Exception {
+        String normalizedPem = normalizePem(certText);
 
-        Path<LocalDateTime> datePath = mock(Path.class);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
 
-        when(root.<LocalDateTime>get("certEndDate")).thenReturn(datePath);
-        when(cb.greaterThan(eq(datePath), any(LocalDateTime.class))).thenReturn(predicate);
-        when(cb.lessThan(eq(datePath), any(LocalDateTime.class))).thenReturn(predicate);
-        when(cb.and(any(Predicate.class), any(Predicate.class))).thenReturn(predicate);
-        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
+        try (InputStream is = new ByteArrayInputStream(
+                normalizedPem.getBytes(StandardCharsets.UTF_8))) {
 
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
-
-        assertNotNull(result);
-        verify(root, times(2)).get("certEndDate");
-        verify(cb).greaterThan(eq(datePath), any(LocalDateTime.class));
-        verify(cb).lessThan(eq(datePath), any(LocalDateTime.class));
+            X509Certificate cert = (X509Certificate) cf.generateCertificate(is);
+            cert.checkValidity();
+            return cert;
+        }
     }
 
-    @Test
-    void shouldReturnConjunctionWhenNoFilters() {
-        CertSearchRequest req = new CertSearchRequest();
+    private String normalizePem(String certText) {
+        if (certText == null || certText.trim().isEmpty()) {
+            throw new IllegalArgumentException("Certificate text is empty");
+        }
 
-        when(cb.conjunction()).thenReturn(predicate);
+        String clean = certText
+                .replace("-----BEGIN CERTIFICATE-----", "")
+                .replace("-----END CERTIFICATE-----", "")
+                .replaceAll("\\s+", "");
 
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
-
-        assertNotNull(result);
-        verify(cb).conjunction();
-        verify(cb, never()).and(any(Predicate[].class));
+        return "-----BEGIN CERTIFICATE-----\n"
+                + clean.replaceAll("(.{64})", "$1\n")
+                + "\n-----END CERTIFICATE-----";
     }
 
-    @Test
-    void shouldApplyMultipleFilters() {
-        CertSearchRequest req = new CertSearchRequest();
-        req.setCertSerialNumber("SER123");
-        req.setKid("kid-123");
-        req.setAddedAccount("damu");
+    private boolean isSelfSigned(X509Certificate cert) {
+        return cert.getSubjectX500Principal()
+                .equals(cert.getIssuerX500Principal());
+    }
 
-        when(root.get(anyString())).thenReturn(path);
-        when(cb.equal(any(), any())).thenReturn(predicate);
-        when(cb.and(any(Predicate[].class))).thenReturn(predicate);
-
-        Predicate result = CertificateSpecification.filter(req)
-                .toPredicate(root, query, cb);
-
-        assertNotNull(result);
-
-        verify(root).get("certSerialNumber");
-        verify(root).get("jwtId");
-        verify(root).get("addedBy");
-
-        verify(cb).equal(path, "SER123");
-        verify(cb).equal(path, "kid-123");
-        verify(cb).equal(path, "damu");
-
-        verify(cb).and(any(Predicate[].class));
+    private void logCert(String label, X509Certificate cert) {
+        log.info("{} Subject : {}", label, cert.getSubjectX500Principal());
+        log.info("{} Issuer  : {}", label, cert.getIssuerX500Principal());
+        log.info("{} Serial  : {}", label, cert.getSerialNumber());
+        log.info("{} ValidFrom: {}", label, cert.getNotBefore());
+        log.info("{} ValidTo  : {}", label, cert.getNotAfter());
     }
 }
