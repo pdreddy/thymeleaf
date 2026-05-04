@@ -1,0 +1,227 @@
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.ResourceLoader;
+
+import sun.security.x509.*;
+
+import java.io.ByteArrayInputStream;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.*;
+import java.security.cert.X509Certificate;
+import java.util.Base64;
+import java.util.Date;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+@ExtendWith(MockitoExtension.class)
+class CertValidatorServiceTest {
+
+    private ResourceLoader resourceLoader;
+    private Resource resource;
+    private CertValidatorService service;
+
+    private X509Certificate rootCert;
+    private X509Certificate intermediateCert;
+    private X509Certificate leafCert;
+
+    private KeyPair rootKeyPair;
+    private KeyPair intermediateKeyPair;
+    private KeyPair leafKeyPair;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        resourceLoader = mock(ResourceLoader.class);
+        resource = mock(Resource.class);
+
+        rootKeyPair = generateKeyPair();
+        intermediateKeyPair = generateKeyPair();
+        leafKeyPair = generateKeyPair();
+
+        // ROOT (self-signed)
+        rootCert = generateCertificate(
+                "CN=RootCA",
+                "CN=RootCA",
+                rootKeyPair.getPublic(),
+                rootKeyPair.getPrivate(),
+                true
+        );
+
+        // INTERMEDIATE (signed by root)
+        intermediateCert = generateCertificate(
+                "CN=IntermediateCA",
+                "CN=RootCA",
+                intermediateKeyPair.getPublic(),
+                rootKeyPair.getPrivate(),
+                true
+        );
+
+        // LEAF (signed by intermediate)
+        leafCert = generateCertificate(
+                "CN=leaf.example.com",
+                "CN=IntermediateCA",
+                leafKeyPair.getPublic(),
+                intermediateKeyPair.getPrivate(),
+                false
+        );
+
+        when(resourceLoader.getResource("classpath:certs/root-cert.pem"))
+                .thenReturn(resource);
+
+        when(resource.exists()).thenReturn(true);
+
+        when(resource.getInputStream()).thenReturn(
+                new ByteArrayInputStream(toPem(rootCert).getBytes(StandardCharsets.UTF_8))
+        );
+
+        service = new CertValidatorService(resourceLoader);
+        service.init();
+    }
+
+    // ✅ SUCCESS CASE (Leaf + Intermediate)
+    @Test
+    void validate_shouldPass_withFullChain() throws Exception {
+        String input = toPem(leafCert) + "\n" + toPem(intermediateCert);
+
+        X509Certificate result = service.validateCertificateFromText(input);
+
+        assertNotNull(result);
+        assertEquals(leafCert.getSubjectX500Principal(), result.getSubjectX500Principal());
+    }
+
+    // ❌ FAIL (Missing Intermediate)
+    @Test
+    void validate_shouldFail_whenIntermediateMissing() {
+        String input = toPem(leafCert);
+
+        assertThrows(Exception.class,
+                () -> service.validateCertificateFromText(input));
+    }
+
+    // ✅ Base64 only input
+    @Test
+    void validate_shouldPass_withBase64OnlyInput() throws Exception {
+        String base64 = Base64.getMimeEncoder(64, "\n".getBytes())
+                .encodeToString(leafCert.getEncoded());
+
+        String input = wrapPem(base64) + "\n" + toPem(intermediateCert);
+
+        X509Certificate result = service.validateCertificateFromText(input);
+
+        assertNotNull(result);
+    }
+
+    // ❌ Empty input
+    @Test
+    void validate_shouldFail_whenEmpty() {
+        assertThrows(Exception.class,
+                () -> service.validateCertificateFromText(""));
+    }
+
+    // ❌ Self-signed not trusted
+    @Test
+    void validate_shouldFail_forUntrustedSelfSigned() throws Exception {
+        KeyPair badKey = generateKeyPair();
+
+        X509Certificate badCert = generateCertificate(
+                "CN=BadCert",
+                "CN=BadCert",
+                badKey.getPublic(),
+                badKey.getPrivate(),
+                true
+        );
+
+        assertThrows(Exception.class,
+                () -> service.validateCertificateFromText(toPem(badCert)));
+    }
+
+    // ✅ INIT success
+    @Test
+    void init_shouldLoadRoot() {
+        assertDoesNotThrow(() -> {
+            CertValidatorService s = new CertValidatorService(resourceLoader);
+            s.init();
+        });
+    }
+
+    // ❌ INIT fail
+    @Test
+    void init_shouldFail_whenRootMissing() {
+        ResourceLoader badLoader = mock(ResourceLoader.class);
+        Resource badResource = mock(Resource.class);
+
+        when(badLoader.getResource("classpath:certs/root-cert.pem"))
+                .thenReturn(badResource);
+
+        when(badResource.exists()).thenReturn(false);
+
+        CertValidatorService s = new CertValidatorService(badLoader);
+
+        assertThrows(Exception.class, s::init);
+    }
+
+    // ================= HELPERS =================
+
+    private static KeyPair generateKeyPair() throws Exception {
+        KeyPairGenerator g = KeyPairGenerator.getInstance("RSA");
+        g.initialize(2048);
+        return g.generateKeyPair();
+    }
+
+    private static X509Certificate generateCertificate(
+            String subjectDn,
+            String issuerDn,
+            PublicKey publicKey,
+            PrivateKey issuerKey,
+            boolean isCa
+    ) throws Exception {
+
+        long now = System.currentTimeMillis();
+        Date from = new Date(now - 1000L);
+        Date to = new Date(now + 365L * 86400000);
+
+        CertificateValidity interval = new CertificateValidity(from, to);
+
+        X500Name subject = new X500Name(subjectDn);
+        X500Name issuer = new X500Name(issuerDn);
+
+        X509CertInfo info = new X509CertInfo();
+        info.set(X509CertInfo.VERSION, new CertificateVersion(3));
+        info.set(X509CertInfo.SERIAL_NUMBER,
+                new CertificateSerialNumber(new BigInteger(64, new SecureRandom())));
+        info.set(X509CertInfo.SUBJECT, subject);
+        info.set(X509CertInfo.ISSUER, issuer);
+        info.set(X509CertInfo.VALIDITY, interval);
+        info.set(X509CertInfo.KEY, new CertificateX509Key(publicKey));
+        info.set(X509CertInfo.ALGORITHM_ID,
+                new CertificateAlgorithmId(AlgorithmId.get("SHA256withRSA")));
+
+        CertificateExtensions ext = new CertificateExtensions();
+
+        ext.set(BasicConstraintsExtension.NAME,
+                new BasicConstraintsExtension(true, isCa, isCa ? 5 : -1));
+
+        info.set(X509CertInfo.EXTENSIONS, ext);
+
+        X509CertImpl cert = new X509CertImpl(info);
+        cert.sign(issuerKey, "SHA256withRSA");
+
+        return cert;
+    }
+
+    private static String toPem(X509Certificate cert) throws Exception {
+        String base64 = Base64.getMimeEncoder(64, "\n".getBytes())
+                .encodeToString(cert.getEncoded());
+        return wrapPem(base64);
+    }
+
+    private static String wrapPem(String base64) {
+        return "-----BEGIN CERTIFICATE-----\n"
+                + base64 +
+                "\n-----END CERTIFICATE-----\n";
+    }
+}
