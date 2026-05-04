@@ -1,73 +1,94 @@
- @Mock
-    private CertificateService certificateService;
+@Test
+    void deleteCertByClientIdAndKId_shouldReturnTrueAndDeleteCacheWhenRecordDeleted() {
+        when(certificateRepository.deleteByClientIdAndJwtId("client1", "kid1"))
+                .thenReturn(1L);
 
-    @InjectMocks
-    private CertificateController certificateController;
+        boolean result = certificateService.deleteCertByClientIdAndKId("client1", "kid1");
 
-    @Test
-    void deleteKid_shouldReturnOkWhenDeleted() {
-        when(certificateService.deleteCertByClientIdAndKId("client1", "kid1"))
-                .thenReturn(true);
+        assertTrue(result);
 
-        ResponseEntity<?> response =
-                certificateController.deleteKID("client1", "kid1");
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertEquals("Kid deleted successfully!", response.getBody());
-
-        verify(certificateService).deleteCertByClientIdAndKId("client1", "kid1");
+        verify(certificateRepository).deleteByClientIdAndJwtId("client1", "kid1");
+        verify(redisTemplate).delete("CERT_CLIENT_client1"); // update key if your actual prefix differs
     }
 
     @Test
-    void deleteKid_shouldReturnNotFoundWhenNotDeleted() {
-        when(certificateService.deleteCertByClientIdAndKId("client1", "kid1"))
-                .thenReturn(false);
+    void deleteCertByClientIdAndKId_shouldReturnFalseWhenNoRecordDeleted() {
+        when(certificateRepository.deleteByClientIdAndJwtId("client1", "kid1"))
+                .thenReturn(0L);
 
-        ResponseEntity<?> response =
-                certificateController.deleteKID("client1", "kid1");
+        boolean result = certificateService.deleteCertByClientIdAndKId("client1", "kid1");
 
-        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
-        assertTrue(response.getBody().toString().contains("Certificate not found"));
-        assertTrue(response.getBody().toString().contains("client1"));
+        assertFalse(result);
 
-        verify(certificateService).deleteCertByClientIdAndKId("client1", "kid1");
+        verify(certificateRepository).deleteByClientIdAndJwtId("client1", "kid1");
+        verify(redisTemplate, never()).delete(anyString());
     }
 
     @Test
-    void getCertificates_shouldReturnCertificateList() {
+    void getCertificates_shouldReturnMappedCertResponses() {
         CertSearchRequest request = new CertSearchRequest();
 
-        List<CertResponse> certResponses = List.of(
-                new CertResponse(),
-                new CertResponse()
+        Certificate cert1 = new Certificate();
+        cert1.setClientId("client1");
+        cert1.setJwtId("kid1");
+        cert1.setCertSerialNumber("SER123");
+        cert1.setCertBeginDate(LocalDateTime.now().minusDays(1));
+        cert1.setCertEndDate(LocalDateTime.now().plusDays(10));
+        cert1.setAddedBy("testuser");
+
+        Certificate cert2 = new Certificate();
+        cert2.setClientId("client2");
+        cert2.setJwtId("kid2");
+        cert2.setCertSerialNumber("SER456");
+        cert2.setCertBeginDate(LocalDateTime.now().minusDays(2));
+        cert2.setCertEndDate(LocalDateTime.now().plusDays(20));
+        cert2.setAddedBy("admin");
+
+        when(certificateRepository.findAll(
+                any(Specification.class),
+                any(Sort.class)
+        )).thenReturn(List.of(cert1, cert2));
+
+        List<CertResponse> result = certificateService.getCertificates(request);
+
+        assertNotNull(result);
+        assertEquals(2, result.size());
+
+        verify(certificateRepository).findAll(
+                any(Specification.class),
+                argThat(sort -> sort.getOrderFor("certBeginDate") != null)
         );
-
-        when(certificateService.getCertificates(request))
-                .thenReturn(certResponses);
-
-        ResponseEntity<List<CertResponse>> response =
-                certificateController.getCertificates(request);
-
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertEquals(2, response.getBody().size());
-
-        verify(certificateService).getCertificates(request);
     }
 
     @Test
-    void getCertificates_shouldReturnEmptyList() {
+    void getCertificates_shouldReturnEmptyListWhenRepositoryEmpty() {
         CertSearchRequest request = new CertSearchRequest();
 
-        when(certificateService.getCertificates(request))
-                .thenReturn(Collections.emptyList());
+        when(certificateRepository.findAll(
+                any(Specification.class),
+                any(Sort.class)
+        )).thenReturn(Collections.emptyList());
 
-        ResponseEntity<List<CertResponse>> response =
-                certificateController.getCertificates(request);
+        List<CertResponse> result = certificateService.getCertificates(request);
 
-        assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertNotNull(response.getBody());
-        assertTrue(response.getBody().isEmpty());
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
 
-        verify(certificateService).getCertificates(request);
+        verify(certificateRepository).findAll(
+                any(Specification.class),
+                any(Sort.class)
+        );
+    }
+
+    @Test
+    void getActiveCertCount_shouldReturnRepositoryCount() {
+        when(certificateRepository.countActiveCertificates("client1"))
+                .thenReturn(2L);
+
+        long result = certificateService.getActiveCertCount("client1");
+
+        assertEquals(2L, result);
+
+        verify(certificateRepository).countActiveCertificates("client1");
     }
 }
