@@ -1,94 +1,112 @@
-@Test
-    void deleteCertByClientIdAndKId_shouldReturnTrueAndDeleteCacheWhenRecordDeleted() {
-        when(certificateRepository.deleteByClientIdAndJwtId("client1", "kid1"))
-                .thenReturn(1L);
+public X509Certificate validateCertificateFromText(String publicCertText) throws Exception {
+    log.info("******** validateCertificateFromText BEGIN ********");
 
-        boolean result = certificateService.deleteCertByClientIdAndKId("client1", "kid1");
+    List<X509Certificate> incomingCerts = loadCertificatesFromText(publicCertText);
 
-        assertTrue(result);
-
-        verify(certificateRepository).deleteByClientIdAndJwtId("client1", "kid1");
-        verify(redisTemplate).delete("CERT_CLIENT_client1"); // update key if your actual prefix differs
+    if (incomingCerts.isEmpty()) {
+        throw new IllegalArgumentException("No certificate found in input text");
     }
 
-    @Test
-    void deleteCertByClientIdAndKId_shouldReturnFalseWhenNoRecordDeleted() {
-        when(certificateRepository.deleteByClientIdAndJwtId("client1", "kid1"))
-                .thenReturn(0L);
+    X509Certificate leafCert = incomingCerts.get(0);
 
-        boolean result = certificateService.deleteCertByClientIdAndKId("client1", "kid1");
+    log.info("Incoming certificate count: {}", incomingCerts.size());
+    logCert("LEAF", leafCert);
 
-        assertFalse(result);
-
-        verify(certificateRepository).deleteByClientIdAndJwtId("client1", "kid1");
-        verify(redisTemplate, never()).delete(anyString());
+    for (int i = 1; i < incomingCerts.size(); i++) {
+        logCert("INCOMING-INTERMEDIATE-" + i, incomingCerts.get(i));
     }
 
-    @Test
-    void getCertificates_shouldReturnMappedCertResponses() {
-        CertSearchRequest request = new CertSearchRequest();
+    for (int i = 0; i < rootCerts.size(); i++) {
+        X509Certificate root = rootCerts.get(i);
+        logCert("ROOT-" + i, root);
 
-        Certificate cert1 = new Certificate();
-        cert1.setClientId("client1");
-        cert1.setJwtId("kid1");
-        cert1.setCertSerialNumber("SER123");
-        cert1.setCertBeginDate(LocalDateTime.now().minusDays(1));
-        cert1.setCertEndDate(LocalDateTime.now().plusDays(10));
-        cert1.setAddedBy("testuser");
+        log.info("Leaf issuer matches root subject? {}",
+                leafCert.getIssuerX500Principal().equals(root.getSubjectX500Principal()));
+    }
 
-        Certificate cert2 = new Certificate();
-        cert2.setClientId("client2");
-        cert2.setJwtId("kid2");
-        cert2.setCertSerialNumber("SER456");
-        cert2.setCertBeginDate(LocalDateTime.now().minusDays(2));
-        cert2.setCertEndDate(LocalDateTime.now().plusDays(20));
-        cert2.setAddedBy("admin");
+    X509CertSelector selector = new X509CertSelector();
+    selector.setCertificate(leafCert);
 
-        when(certificateRepository.findAll(
-                any(Specification.class),
-                any(Sort.class)
-        )).thenReturn(List.of(cert1, cert2));
+    PKIXBuilderParameters params =
+            new PKIXBuilderParameters(trustAnchors, selector);
 
-        List<CertResponse> result = certificateService.getCertificates(request);
+    params.setRevocationEnabled(false);
 
-        assertNotNull(result);
-        assertEquals(2, result.size());
+    // Important: give PKIX the incoming intermediate certs
+    CertStore certStore = CertStore.getInstance(
+            "Collection",
+            new CollectionCertStoreParameters(incomingCerts)
+    );
 
-        verify(certificateRepository).findAll(
-                any(Specification.class),
-                argThat(sort -> sort.getOrderFor("certBeginDate") != null)
+    params.addCertStore(certStore);
+
+    log.info("Starting PKIX path builder...");
+
+    try {
+        CertPathBuilder builder = CertPathBuilder.getInstance("PKIX");
+        PKIXCertPathBuilderResult result =
+                (PKIXCertPathBuilderResult) builder.build(params);
+
+        log.info("PKIX validation successful");
+        log.info("Trust anchor used: {}",
+                result.getTrustAnchor().getTrustedCert().getSubjectX500Principal());
+
+        return leafCert;
+
+    } catch (CertPathBuilderException ex) {
+        log.error("PKIX path build failed: {}", ex.getMessage());
+        log.error("Leaf Subject: {}", leafCert.getSubjectX500Principal());
+        log.error("Leaf Issuer : {}", leafCert.getIssuerX500Principal());
+        log.error("Root cert count: {}", rootCerts.size());
+        log.error("TrustAnchor count: {}", trustAnchors.size());
+
+        throw new CertificateException(
+                "Certificate chain validation failed. Intermediate certificate may be missing.",
+                ex
         );
     }
+}
 
-    @Test
-    void getCertificates_shouldReturnEmptyListWhenRepositoryEmpty() {
-        CertSearchRequest request = new CertSearchRequest();
 
-        when(certificateRepository.findAll(
-                any(Specification.class),
-                any(Sort.class)
-        )).thenReturn(Collections.emptyList());
 
-        List<CertResponse> result = certificateService.getCertificates(request);
 
-        assertNotNull(result);
-        assertTrue(result.isEmpty());
+private List<X509Certificate> loadCertificatesFromText(String certText) throws Exception {
+    String normalized = normalizeCertificates(certText);
 
-        verify(certificateRepository).findAll(
-                any(Specification.class),
-                any(Sort.class)
-        );
+    CertificateFactory cf = CertificateFactory.getInstance("X.509");
+
+    try (InputStream is = new ByteArrayInputStream(normalized.getBytes(StandardCharsets.UTF_8))) {
+        Collection<? extends Certificate> certs = cf.generateCertificates(is);
+
+        List<X509Certificate> x509Certs = new ArrayList<>();
+
+        for (Certificate cert : certs) {
+            x509Certs.add((X509Certificate) cert);
+        }
+
+        return x509Certs;
+    }
+}
+
+private String normalizeCertificates(String certText) {
+    String text = certText.trim();
+
+    if (text.contains("-----BEGIN CERTIFICATE-----")) {
+        return text;
     }
 
-    @Test
-    void getActiveCertCount_shouldReturnRepositoryCount() {
-        when(certificateRepository.countActiveCertificates("client1"))
-                .thenReturn(2L);
+    String cleaned = text
+            .replaceAll("\\s+", "");
 
-        long result = certificateService.getActiveCertCount("client1");
+    StringBuilder pem = new StringBuilder();
+    pem.append("-----BEGIN CERTIFICATE-----\n");
 
-        assertEquals(2L, result);
-
-        verify(certificateRepository).countActiveCertificates("client1");
+    for (int i = 0; i < cleaned.length(); i += 64) {
+        pem.append(cleaned, i, Math.min(i + 64, cleaned.length()))
+                .append("\n");
     }
+
+    pem.append("-----END CERTIFICATE-----\n");
+
+    return pem.toString();
 }
