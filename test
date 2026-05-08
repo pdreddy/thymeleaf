@@ -1,22 +1,157 @@
-if (req.getJustification() != null && req.getJustification().length > 0) {
+@ExtendWith(MockitoExtension.class)
+class CertificateSpecificationTest {
 
-    String searchText = new String(req.getJustification(), StandardCharsets.UTF_8)
-            .trim()
-            .toLowerCase();
+    @Mock
+    private Root<Certificate> root;
 
-    if (!searchText.isEmpty()) {
-        Expression<String> justificationText = cb.function(
-                "convert_from",
-                String.class,
-                root.get("justification"),
-                cb.literal("UTF8")
+    @Mock
+    private CriteriaQuery<?> query;
+
+    @Mock
+    private CriteriaBuilder cb;
+
+    @Mock
+    private Path<LocalDateTime> certEndDatePath;
+
+    @Mock
+    private Path<byte[]> justificationPath;
+
+    @Mock
+    private Expression<String> justificationText;
+
+    @Mock
+    private Predicate expiredPredicate;
+
+    @Mock
+    private Predicate futureStartPredicate;
+
+    @Mock
+    private Predicate futureEndPredicate;
+
+    @Mock
+    private Predicate betweenPredicate;
+
+    @Mock
+    private Predicate justificationPredicate;
+
+    @Mock
+    private Predicate finalPredicate;
+
+    @Test
+    void shouldBuildExpiredCertificatePredicate_whenDaysIsZero() {
+        CertSearchRequest req = new CertSearchRequest();
+        req.setNumDaysToExpire(0);
+
+        when(root.<LocalDateTime>get("certEndDate")).thenReturn(certEndDatePath);
+        when(cb.lessThan(eq(certEndDatePath), any(LocalDateTime.class)))
+                .thenReturn(expiredPredicate);
+
+        Predicate result = CertificateSpecification.searchCertificates(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+
+        verify(cb).lessThan(eq(certEndDatePath), any(LocalDateTime.class));
+        verify(cb, never()).greaterThan(any(), any(LocalDateTime.class));
+    }
+
+    @Test
+    void shouldBuildExpiringSoonPredicate_whenDaysGreaterThanZero() {
+        CertSearchRequest req = new CertSearchRequest();
+        req.setNumDaysToExpire(10);
+
+        when(root.<LocalDateTime>get("certEndDate")).thenReturn(certEndDatePath);
+
+        when(cb.greaterThan(eq(certEndDatePath), any(LocalDateTime.class)))
+                .thenReturn(futureStartPredicate);
+
+        when(cb.lessThan(eq(certEndDatePath), any(LocalDateTime.class)))
+                .thenReturn(futureEndPredicate);
+
+        when(cb.and(futureStartPredicate, futureEndPredicate))
+                .thenReturn(betweenPredicate);
+
+        Predicate result = CertificateSpecification.searchCertificates(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+
+        verify(cb).greaterThan(eq(certEndDatePath), any(LocalDateTime.class));
+        verify(cb).lessThan(eq(certEndDatePath), any(LocalDateTime.class));
+        verify(cb).and(futureStartPredicate, futureEndPredicate);
+    }
+
+    @Test
+    void shouldBuildJustificationLikePredicate_whenJustificationPresent() {
+        CertSearchRequest req = new CertSearchRequest();
+        req.setJustification("test");
+
+        when(root.<byte[]>get("justification")).thenReturn(justificationPath);
+
+        when(cb.literal("UTF8")).thenReturn(mock(Expression.class));
+
+        when(cb.function(
+                eq("convert_from"),
+                eq(String.class),
+                eq(justificationPath),
+                any(Expression.class)
+        )).thenReturn(justificationText);
+
+        when(cb.lower(justificationText)).thenReturn(justificationText);
+
+        when(cb.like(eq(justificationText), eq("%test%")))
+                .thenReturn(justificationPredicate);
+
+        Predicate result = CertificateSpecification.searchCertificates(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+
+        verify(cb).function(
+                eq("convert_from"),
+                eq(String.class),
+                eq(justificationPath),
+                any(Expression.class)
         );
 
-        predicateList.add(
-                cb.like(
-                        cb.lower(justificationText),
-                        "%" + searchText + "%"
-                )
-        );
+        verify(cb).like(justificationText, "%test%");
+    }
+
+    @Test
+    void shouldCombineDaysAndJustificationPredicates() {
+        CertSearchRequest req = new CertSearchRequest();
+        req.setNumDaysToExpire(0);
+        req.setJustification("expired");
+
+        when(root.<LocalDateTime>get("certEndDate")).thenReturn(certEndDatePath);
+        when(root.<byte[]>get("justification")).thenReturn(justificationPath);
+
+        when(cb.lessThan(eq(certEndDatePath), any(LocalDateTime.class)))
+                .thenReturn(expiredPredicate);
+
+        when(cb.literal("UTF8")).thenReturn(mock(Expression.class));
+
+        when(cb.function(
+                eq("convert_from"),
+                eq(String.class),
+                eq(justificationPath),
+                any(Expression.class)
+        )).thenReturn(justificationText);
+
+        when(cb.lower(justificationText)).thenReturn(justificationText);
+
+        when(cb.like(eq(justificationText), eq("%expired%")))
+                .thenReturn(justificationPredicate);
+
+        when(cb.and(any(Predicate[].class))).thenReturn(finalPredicate);
+
+        Predicate result = CertificateSpecification.searchCertificates(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+
+        verify(cb).lessThan(eq(certEndDatePath), any(LocalDateTime.class));
+        verify(cb).like(justificationText, "%expired%");
+        verify(cb).and(any(Predicate[].class));
     }
 }
