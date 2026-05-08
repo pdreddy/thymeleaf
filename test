@@ -222,4 +222,66 @@ class CertificateSpecificationTest {
         verify(cb).like(lowerJustificationText, "%expired%");
         verify(cb).and(any(Predicate[].class));
     }
+
+
+@Test
+void shouldApplyMultipleFilters() {
+    CertSearchRequest req = new CertSearchRequest();
+    req.setKid("kid123");
+    req.setCertSerialNumber("serial123");
+    req.setAddedBy("damu");
+
+    Path<String> kidPath = mock(Path.class);
+    Path<String> serialPath = mock(Path.class);
+    Path<String> addedByPath = mock(Path.class);
+
+    Predicate kidPredicate = mock(Predicate.class);
+    Predicate serialPredicate = mock(Predicate.class);
+    Predicate addedByPredicate = mock(Predicate.class);
+    Predicate finalPredicate = mock(Predicate.class);
+
+    when(root.<String>get("kid")).thenReturn(kidPath);
+    when(root.<String>get("certSerialNumber")).thenReturn(serialPath);
+    when(root.<String>get("addedBy")).thenReturn(addedByPath);
+
+    when(cb.equal(kidPath, "kid123")).thenReturn(kidPredicate);
+    when(cb.equal(serialPath, "serial123")).thenReturn(serialPredicate);
+    when(cb.equal(addedByPath, "damu")).thenReturn(addedByPredicate);
+
+    when(cb.and(any(Predicate[].class))).thenReturn(finalPredicate);
+
+    Predicate result = CertificateSpecification.filter(req)
+            .toPredicate(root, query, cb);
+
+    assertNotNull(result);
+    assertSame(finalPredicate, result);
+
+    verify(cb).equal(kidPath, "kid123");
+    verify(cb).equal(serialPath, "serial123");
+    verify(cb).equal(addedByPath, "damu");
+    verify(cb).and(any(Predicate[].class));
+    verify(cb, never()).conjunction();
+}
+@Test
+void shouldReturnConjunctionWhenNoFilters() {
+    CertSearchRequest req = new CertSearchRequest();
+    req.setNumDaysToexpire(null);
+    req.setJustification(null);
+    req.setKid(null);
+    req.setCertSerialNumber(null);
+    req.setAddedBy(null);
+
+    Predicate conjunctionPredicate = mock(Predicate.class);
+
+    when(cb.conjunction()).thenReturn(conjunctionPredicate);
+
+    Predicate result = CertificateSpecification.filter(req)
+            .toPredicate(root, query, cb);
+
+    assertNotNull(result);
+    assertSame(conjunctionPredicate, result);
+
+    verify(cb).conjunction();
+    verify(cb, never()).and(any(Predicate[].class));
+}
 }
