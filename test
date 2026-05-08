@@ -1,0 +1,22 @@
+if (req.getJustification() != null && req.getJustification().length > 0) {
+
+    String searchText = new String(req.getJustification(), StandardCharsets.UTF_8)
+            .trim()
+            .toLowerCase();
+
+    if (!searchText.isEmpty()) {
+        Expression<String> justificationText = cb.function(
+                "convert_from",
+                String.class,
+                root.get("justification"),
+                cb.literal("UTF8")
+        );
+
+        predicateList.add(
+                cb.like(
+                        cb.lower(justificationText),
+                        "%" + searchText + "%"
+                )
+        );
+    }
+}
