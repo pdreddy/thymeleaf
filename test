@@ -1,127 +1,193 @@
+package gov.ssa.acusapp.jwks.repository;
+
+import gov.ssa.acusapp.jwks.model.Certificate;
+import gov.ssa.acusapp.jwks.model.CertSearchRequest;
+import jakarta.persistence.criteria.CriteriaBuilder;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Expression;
+import jakarta.persistence.criteria.Path;
+import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.Root;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.jpa.domain.Specification;
+
+import java.time.LocalDateTime;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
 @ExtendWith(MockitoExtension.class)
 class CertificateSpecificationTest {
-
-    @Mock
-    private Root<Certificate> root;
-
-    @Mock
-    private CriteriaQuery<?> query;
-
-    @Mock
-    private CriteriaBuilder cb;
-
-    @Mock
-    private Path<LocalDateTime> certEndDatePath;
-
-    @Mock
-    private Path<byte[]> justificationPath;
-
-    @Mock
-    private Expression<String> justificationText;
-
-    @Mock
-    private Predicate expiredPredicate;
-
-    @Mock
-    private Predicate futureStartPredicate;
-
-    @Mock
-    private Predicate futureEndPredicate;
-
-    @Mock
-    private Predicate betweenPredicate;
-
-    @Mock
-    private Predicate justificationPredicate;
-
-    @Mock
-    private Predicate finalPredicate;
 
     @Test
     void shouldBuildExpiredCertificatePredicate_whenDaysIsZero() {
         CertSearchRequest req = new CertSearchRequest();
-        req.setNumDaysToExpire(0);
+        req.setNumDaysToexpire(0);
+
+        Root<Certificate> root = mock(Root.class);
+        CriteriaQuery<?> query = mock(CriteriaQuery.class);
+        CriteriaBuilder cb = mock(CriteriaBuilder.class);
+
+        Path<LocalDateTime> certEndDatePath = mock(Path.class);
+        Predicate expiredPredicate = mock(Predicate.class);
+        Predicate finalPredicate = mock(Predicate.class);
 
         when(root.<LocalDateTime>get("certEndDate")).thenReturn(certEndDatePath);
         when(cb.lessThan(eq(certEndDatePath), any(LocalDateTime.class)))
                 .thenReturn(expiredPredicate);
+        when(cb.and(any(Predicate[].class))).thenReturn(finalPredicate);
 
-        Predicate result = CertificateSpecification.searchCertificates(req)
+        Predicate result = CertificateSpecification.filter(req)
                 .toPredicate(root, query, cb);
 
         assertNotNull(result);
+        assertSame(finalPredicate, result);
 
         verify(cb).lessThan(eq(certEndDatePath), any(LocalDateTime.class));
+        verify(cb).and(any(Predicate[].class));
         verify(cb, never()).greaterThan(any(), any(LocalDateTime.class));
+        verify(cb, never()).conjunction();
     }
 
     @Test
     void shouldBuildExpiringSoonPredicate_whenDaysGreaterThanZero() {
         CertSearchRequest req = new CertSearchRequest();
-        req.setNumDaysToExpire(10);
+        req.setNumDaysToexpire(10);
+
+        Root<Certificate> root = mock(Root.class);
+        CriteriaQuery<?> query = mock(CriteriaQuery.class);
+        CriteriaBuilder cb = mock(CriteriaBuilder.class);
+
+        Path<LocalDateTime> certEndDatePath = mock(Path.class);
+
+        Predicate greaterThanPredicate = mock(Predicate.class);
+        Predicate lessThanPredicate = mock(Predicate.class);
+        Predicate daysPredicate = mock(Predicate.class);
+        Predicate finalPredicate = mock(Predicate.class);
 
         when(root.<LocalDateTime>get("certEndDate")).thenReturn(certEndDatePath);
 
         when(cb.greaterThan(eq(certEndDatePath), any(LocalDateTime.class)))
-                .thenReturn(futureStartPredicate);
+                .thenReturn(greaterThanPredicate);
 
         when(cb.lessThan(eq(certEndDatePath), any(LocalDateTime.class)))
-                .thenReturn(futureEndPredicate);
+                .thenReturn(lessThanPredicate);
 
-        when(cb.and(futureStartPredicate, futureEndPredicate))
-                .thenReturn(betweenPredicate);
+        when(cb.and(greaterThanPredicate, lessThanPredicate))
+                .thenReturn(daysPredicate);
 
-        Predicate result = CertificateSpecification.searchCertificates(req)
+        when(cb.and(any(Predicate[].class)))
+                .thenReturn(finalPredicate);
+
+        Predicate result = CertificateSpecification.filter(req)
                 .toPredicate(root, query, cb);
 
         assertNotNull(result);
+        assertSame(finalPredicate, result);
 
         verify(cb).greaterThan(eq(certEndDatePath), any(LocalDateTime.class));
         verify(cb).lessThan(eq(certEndDatePath), any(LocalDateTime.class));
-        verify(cb).and(futureStartPredicate, futureEndPredicate);
+        verify(cb).and(greaterThanPredicate, lessThanPredicate);
+        verify(cb).and(any(Predicate[].class));
+    }
+
+    @Test
+    void shouldReturnConjunctionWhenNoFilters() {
+        CertSearchRequest req = new CertSearchRequest();
+
+        Root<Certificate> root = mock(Root.class);
+        CriteriaQuery<?> query = mock(CriteriaQuery.class);
+        CriteriaBuilder cb = mock(CriteriaBuilder.class);
+
+        Predicate conjunctionPredicate = mock(Predicate.class);
+
+        when(cb.conjunction()).thenReturn(conjunctionPredicate);
+
+        Predicate result = CertificateSpecification.filter(req)
+                .toPredicate(root, query, cb);
+
+        assertNotNull(result);
+        assertSame(conjunctionPredicate, result);
+
+        verify(cb).conjunction();
+        verify(cb, never()).and(any(Predicate[].class));
     }
 
     @Test
     void shouldBuildJustificationLikePredicate_whenJustificationPresent() {
         CertSearchRequest req = new CertSearchRequest();
-        req.setJustification("test");
+        req.setJustification("Test Value");
+
+        Root<Certificate> root = mock(Root.class);
+        CriteriaQuery<?> query = mock(CriteriaQuery.class);
+        CriteriaBuilder cb = mock(CriteriaBuilder.class);
+
+        Path<byte[]> justificationPath = mock(Path.class);
+        Expression<String> utf8Expression = mock(Expression.class);
+        Expression<String> justificationText = mock(Expression.class);
+        Expression<String> lowerJustificationText = mock(Expression.class);
+
+        Predicate likePredicate = mock(Predicate.class);
+        Predicate finalPredicate = mock(Predicate.class);
 
         when(root.<byte[]>get("justification")).thenReturn(justificationPath);
-
-        when(cb.literal("UTF8")).thenReturn(mock(Expression.class));
+        when(cb.literal("UTF8")).thenReturn(utf8Expression);
 
         when(cb.function(
                 eq("convert_from"),
                 eq(String.class),
                 eq(justificationPath),
-                any(Expression.class)
+                eq(utf8Expression)
         )).thenReturn(justificationText);
 
-        when(cb.lower(justificationText)).thenReturn(justificationText);
+        when(cb.lower(justificationText)).thenReturn(lowerJustificationText);
 
-        when(cb.like(eq(justificationText), eq("%test%")))
-                .thenReturn(justificationPredicate);
+        when(cb.like(eq(lowerJustificationText), eq("%test value%")))
+                .thenReturn(likePredicate);
 
-        Predicate result = CertificateSpecification.searchCertificates(req)
+        when(cb.and(any(Predicate[].class))).thenReturn(finalPredicate);
+
+        Predicate result = CertificateSpecification.filter(req)
                 .toPredicate(root, query, cb);
 
         assertNotNull(result);
+        assertSame(finalPredicate, result);
 
         verify(cb).function(
                 eq("convert_from"),
                 eq(String.class),
                 eq(justificationPath),
-                any(Expression.class)
+                eq(utf8Expression)
         );
 
-        verify(cb).like(justificationText, "%test%");
+        verify(cb).lower(justificationText);
+        verify(cb).like(lowerJustificationText, "%test value%");
+        verify(cb).and(any(Predicate[].class));
     }
 
     @Test
     void shouldCombineDaysAndJustificationPredicates() {
         CertSearchRequest req = new CertSearchRequest();
-        req.setNumDaysToExpire(0);
+        req.setNumDaysToexpire(0);
         req.setJustification("expired");
+
+        Root<Certificate> root = mock(Root.class);
+        CriteriaQuery<?> query = mock(CriteriaQuery.class);
+        CriteriaBuilder cb = mock(CriteriaBuilder.class);
+
+        Path<LocalDateTime> certEndDatePath = mock(Path.class);
+        Path<byte[]> justificationPath = mock(Path.class);
+
+        Expression<String> utf8Expression = mock(Expression.class);
+        Expression<String> justificationText = mock(Expression.class);
+        Expression<String> lowerJustificationText = mock(Expression.class);
+
+        Predicate expiredPredicate = mock(Predicate.class);
+        Predicate likePredicate = mock(Predicate.class);
+        Predicate finalPredicate = mock(Predicate.class);
 
         when(root.<LocalDateTime>get("certEndDate")).thenReturn(certEndDatePath);
         when(root.<byte[]>get("justification")).thenReturn(justificationPath);
@@ -129,29 +195,31 @@ class CertificateSpecificationTest {
         when(cb.lessThan(eq(certEndDatePath), any(LocalDateTime.class)))
                 .thenReturn(expiredPredicate);
 
-        when(cb.literal("UTF8")).thenReturn(mock(Expression.class));
+        when(cb.literal("UTF8")).thenReturn(utf8Expression);
 
         when(cb.function(
                 eq("convert_from"),
                 eq(String.class),
                 eq(justificationPath),
-                any(Expression.class)
+                eq(utf8Expression)
         )).thenReturn(justificationText);
 
-        when(cb.lower(justificationText)).thenReturn(justificationText);
+        when(cb.lower(justificationText)).thenReturn(lowerJustificationText);
 
-        when(cb.like(eq(justificationText), eq("%expired%")))
-                .thenReturn(justificationPredicate);
+        when(cb.like(eq(lowerJustificationText), eq("%expired%")))
+                .thenReturn(likePredicate);
 
-        when(cb.and(any(Predicate[].class))).thenReturn(finalPredicate);
+        when(cb.and(any(Predicate[].class)))
+                .thenReturn(finalPredicate);
 
-        Predicate result = CertificateSpecification.searchCertificates(req)
+        Predicate result = CertificateSpecification.filter(req)
                 .toPredicate(root, query, cb);
 
         assertNotNull(result);
+        assertSame(finalPredicate, result);
 
         verify(cb).lessThan(eq(certEndDatePath), any(LocalDateTime.class));
-        verify(cb).like(justificationText, "%expired%");
+        verify(cb).like(lowerJustificationText, "%expired%");
         verify(cb).and(any(Predicate[].class));
     }
 }
